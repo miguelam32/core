@@ -32,6 +32,9 @@ import com.maxrave.logger.Logger
 import com.maxrave.media3.R
 import com.maxrave.media3.extension.toCommandButton
 import com.maxrave.media3.utils.CoilBitmapLoader
+import com.maxrave.media3.extension.LyricsUdpExporter
+import com.maxrave.domain.repository.LyricsCanvasRepository
+import androidx.media3.common.MediaItem
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
@@ -60,6 +63,8 @@ internal class SimpleMediaService :
 
     private val simpleMediaServiceHandler: MediaPlayerHandler by inject<MediaPlayerHandler>()
     private val dataStoreManager: DataStoreManager by inject<DataStoreManager>()
+    private val lyricsCanvasRepository: LyricsCanvasRepository by inject<LyricsCanvasRepository>()
+    private var mzkLyricsJob: kotlinx.coroutines.Job? = null
 
     private val binder = MusicBinder()
 
@@ -112,6 +117,38 @@ internal class SimpleMediaService :
                     player,
                     simpleMediaSessionCallback,
                 )
+        }
+
+        // MZKXLF-HOOK: no borrar en merge - exporta letra y posicion en tiempo real por UDP a Termux-X11
+        player.addListener(object : Player.Listener {
+            override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                val videoId = mediaItem?.mediaId?.substringAfterLast("/")
+                mzkLyricsJob?.cancel()
+                if (videoId != null) {
+                    mzkLyricsJob = coroutineScope.launch {
+                        lyricsCanvasRepository.getSavedLyrics(videoId).collect { entity ->
+                            val lines = entity?.lines
+                            lines?.forEachIndexed { index, line ->
+                                LyricsUdpExporter.sendMeta(
+                                    videoId,
+                                    index,
+                                    line.startTimeMs.toLongOrNull() ?: 0L,
+                                    line.words,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        })
+
+        coroutineScope.launch {
+            while (isActive) {
+                if (player.isPlaying) {
+                    LyricsUdpExporter.sendPosition(player.currentPosition)
+                }
+                delay(250)
+            }
         }
 
         simpleMediaServiceHandler.onUpdateNotification = { list ->

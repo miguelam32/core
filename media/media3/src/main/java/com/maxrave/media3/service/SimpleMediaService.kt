@@ -126,16 +126,24 @@ internal class SimpleMediaService :
                 mzkLyricsJob?.cancel()
                 if (videoId != null) {
                     mzkLyricsJob = coroutineScope.launch {
-                        lyricsCanvasRepository.getSavedLyrics(videoId).collect { entity ->
-                            val lines = entity?.lines
-                            lines?.forEachIndexed { index, line ->
-                                LyricsUdpExporter.sendMeta(
-                                    videoId,
-                                    index,
-                                    line.startTimeMs.toLongOrNull() ?: 0L,
-                                    line.words,
+                        try {
+                            LyricsUdpExporter.sendDebug("START videoId=$videoId")
+                            lyricsCanvasRepository.getSavedLyrics(videoId).collect { entity ->
+                                LyricsUdpExporter.sendDebug(
+                                    "ENTITY entity=${entity != null} lines=${entity?.lines?.size}"
                                 )
+                                val lines = entity?.lines
+                                lines?.forEachIndexed { index, line ->
+                                    LyricsUdpExporter.sendMeta(
+                                        videoId,
+                                        index,
+                                        line.startTimeMs.toLongOrNull() ?: 0L,
+                                        line.words,
+                                    )
+                                }
                             }
+                        } catch (e: Exception) {
+                            LyricsUdpExporter.sendDebug("ERROR ${e::class.simpleName}: ${e.message}")
                         }
                     }
                 }

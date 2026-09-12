@@ -17,6 +17,10 @@ internal object LyricsUdpExporter {
         send("POS|$positionMs")
     }
 
+    fun sendDebug(msg: String) {
+        send("DBG|$msg")
+    }
+
     private fun send(payloadText: String) {
         Thread {
             try {

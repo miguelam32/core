@@ -46,6 +46,10 @@ import org.koin.core.component.inject
 import org.koin.core.qualifier.named
 import kotlin.system.exitProcess
 import kotlin.time.Duration.Companion.seconds
+import com.maxrave.domain.utils.Resource
+import com.maxrave.domain.utils.toLyricsEntity
+import com.maxrave.domain.data.model.metadata.Lyrics
+import kotlinx.coroutines.flow.firstOrNull
 
 @UnstableApi
 internal class SimpleMediaService :
@@ -125,15 +129,18 @@ internal class SimpleMediaService :
                 val videoId = mediaItem?.mediaId?.substringAfterLast("/")
                 mzkLyricsJob?.cancel()
                 if (videoId != null) {
+                    val artist = mediaItem?.mediaMetadata?.artist?.toString() ?: ""
+                    val title = mediaItem?.mediaMetadata?.title?.toString() ?: ""
                     mzkLyricsJob = coroutineScope.launch {
                         try {
                             LyricsUdpExporter.sendDebug("START videoId=$videoId")
-                            lyricsCanvasRepository.getSavedLyrics(videoId).collect { entity ->
-                                LyricsUdpExporter.sendDebug(
-                                    "ENTITY entity=${entity != null} lines=${entity?.lines?.size}"
-                                )
-                                val lines = entity?.lines
-                                lines?.forEachIndexed { index, line ->
+                            val entity = lyricsCanvasRepository.getSavedLyrics(videoId).firstOrNull()
+                            LyricsUdpExporter.sendDebug(
+                                "ENTITY entity=${entity != null} lines=${entity?.lines?.size}"
+                            )
+                            val lines = entity?.lines
+                            if (!lines.isNullOrEmpty()) {
+                                lines.forEachIndexed { index, line ->
                                     LyricsUdpExporter.sendMeta(
                                         videoId,
                                         index,
@@ -141,11 +148,60 @@ internal class SimpleMediaService :
                                         line.words,
                                     )
                                 }
+                            } else {
+                                fetchAndSendLyricsFallback(videoId, artist, title)
                             }
                         } catch (e: Exception) {
                             LyricsUdpExporter.sendDebug("ERROR ${e::class.simpleName}: ${e.message}")
                         }
                     }
+                }
+            }
+
+            private suspend fun fetchAndSendLyricsFallback(
+                videoId: String,
+                artist: String,
+                title: String,
+            ) {
+                try {
+                    LyricsUdpExporter.sendDebug("FALLBACK fetching network lyrics for $videoId")
+
+                    var lyrics: Lyrics? = null
+
+                    lyricsCanvasRepository.getSimpMusicLyrics(videoId).collect { res ->
+                        if (res is Resource.Success && res.data != null) {
+                            lyrics = res.data
+                        }
+                    }
+
+                    if (lyrics == null) {
+                        val durationMs = player.duration.takeIf { it != androidx.media3.common.C.TIME_UNSET }
+                        val durationSec = durationMs?.let { (it / 1000).toInt() }
+                        lyricsCanvasRepository.getLrclibLyricsData(artist, title, durationSec).collect { res ->
+                            if (res is Resource.Success && res.data != null) {
+                                lyrics = res.data
+                            }
+                        }
+                    }
+
+                    val result = lyrics
+                    if (result != null) {
+                        val entity = result.toLyricsEntity(videoId)
+                        lyricsCanvasRepository.insertLyrics(entity)
+                        LyricsUdpExporter.sendDebug("FALLBACK success, lines=${entity.lines?.size}")
+                        entity.lines?.forEachIndexed { index, line ->
+                            LyricsUdpExporter.sendMeta(
+                                videoId,
+                                index,
+                                line.startTimeMs.toLongOrNull() ?: 0L,
+                                line.words,
+                            )
+                        }
+                    } else {
+                        LyricsUdpExporter.sendDebug("FALLBACK no lyrics found for $videoId")
+                    }
+                } catch (e: Exception) {
+                    LyricsUdpExporter.sendDebug("FALLBACK ERROR ${e::class.simpleName}: ${e.message}")
                 }
             }
         })

@@ -177,7 +177,7 @@ internal class SimpleMediaService :
 
                     var lyrics: Lyrics? = null
 
-                    kotlinx.coroutines.withTimeoutOrNull(5000) {
+                    kotlinx.coroutines.withTimeoutOrNull(10000) {
                         lyricsCanvasRepository.getSimpMusicLyrics(videoId).collect { res ->
                             if (res is Resource.Success && res.data != null) {
                                 lyrics = res.data
@@ -188,7 +188,7 @@ internal class SimpleMediaService :
                     if (lyrics == null) {
                         val durationMs = player.duration.takeIf { it != androidx.media3.common.C.TIME_UNSET }
                         val durationSec = durationMs?.let { (it / 1000).toInt() }
-                        kotlinx.coroutines.withTimeoutOrNull(5000) {
+                        kotlinx.coroutines.withTimeoutOrNull(10000) {
                             lyricsCanvasRepository.getLrclibLyricsData(artist, title, durationSec).collect { res ->
                                 if (res is Resource.Success && res.data != null) {
                                     lyrics = res.data

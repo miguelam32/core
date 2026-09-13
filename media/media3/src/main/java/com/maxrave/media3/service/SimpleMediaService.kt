@@ -131,6 +131,8 @@ internal class SimpleMediaService :
                 if (videoId != null) {
                     val artist = mediaItem?.mediaMetadata?.artist?.toString() ?: ""
                     val title = mediaItem?.mediaMetadata?.title?.toString() ?: ""
+                    val durationMsForSong = player.duration.takeIf { it != androidx.media3.common.C.TIME_UNSET } ?: 0L
+                    LyricsUdpExporter.sendSong(title, artist, durationMsForSong)
                     mzkLyricsJob = coroutineScope.launch {
                         try {
                             LyricsUdpExporter.sendDebug("START videoId=$videoId")

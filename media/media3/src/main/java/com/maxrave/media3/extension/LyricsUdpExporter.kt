@@ -21,6 +21,12 @@ internal object LyricsUdpExporter {
         send("DBG|$msg")
     }
 
+    fun sendSong(title: String, artist: String, durationMs: Long) {
+        send("SONG|${sanitize(title)}|${sanitize(artist)}|$durationMs")
+    }
+
+    private fun sanitize(s: String): String = s.replace("|", "/")
+
     private fun send(payloadText: String) {
         Thread {
             try {

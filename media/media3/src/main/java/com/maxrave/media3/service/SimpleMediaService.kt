@@ -124,6 +124,10 @@ internal class SimpleMediaService :
         }
 
         // MZKXLF-HOOK: no borrar en merge - exporta letra y posicion en tiempo real por UDP a Termux-X11
+        var mzkLastSongTitle = ""
+        var mzkLastSongArtist = ""
+        var mzkLastSongDurationMs = 0L
+        var mzkSongResendTick = 0
         player.addListener(object : Player.Listener {
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
                 val videoId = mediaItem?.mediaId?.substringAfterLast("/")
@@ -133,6 +137,9 @@ internal class SimpleMediaService :
                     val title = mediaItem?.mediaMetadata?.title?.toString() ?: ""
                     val durationMsForSong = player.duration.takeIf { it != androidx.media3.common.C.TIME_UNSET } ?: 0L
                     LyricsUdpExporter.sendSong(title, artist, durationMsForSong)
+                    mzkLastSongTitle = title
+                    mzkLastSongArtist = artist
+                    mzkLastSongDurationMs = durationMsForSong
                     mzkLyricsJob = coroutineScope.launch {
                         try {
                             LyricsUdpExporter.sendDebug("START videoId=$videoId")
@@ -216,6 +223,11 @@ internal class SimpleMediaService :
             while (isActive) {
                 if (player.isPlaying) {
                     LyricsUdpExporter.sendPosition(player.currentPosition)
+                    mzkSongResendTick++
+                    if (mzkSongResendTick >= 20 && mzkLastSongTitle.isNotEmpty()) {
+                        mzkSongResendTick = 0
+                        LyricsUdpExporter.sendSong(mzkLastSongTitle, mzkLastSongArtist, mzkLastSongDurationMs)
+                    }
                 }
                 delay(250)
             }

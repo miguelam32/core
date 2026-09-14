@@ -236,6 +236,32 @@ internal class DataStoreManagerImpl(
         }
     }
 
+    override val lyricsUdpEnabled: Flow<String> =
+        settingsDataStore.data.map { preferences ->
+            preferences[LYRICS_UDP_ENABLED] ?: TRUE
+        }
+
+    override suspend fun setLyricsUdpEnabled(enabled: Boolean) {
+        withContext(Dispatchers.IO) {
+            settingsDataStore.edit { settings ->
+                settings[LYRICS_UDP_ENABLED] = if (enabled) TRUE else FALSE
+            }
+        }
+    }
+
+    override val vuTcpEnabled: Flow<String> =
+        settingsDataStore.data.map { preferences ->
+            preferences[VU_TCP_ENABLED] ?: FALSE
+        }
+
+    override suspend fun setVuTcpEnabled(enabled: Boolean) {
+        withContext(Dispatchers.IO) {
+            settingsDataStore.edit { settings ->
+                settings[VU_TCP_ENABLED] = if (enabled) TRUE else FALSE
+            }
+        }
+    }
+
     override val skipSilent: Flow<String> =
         settingsDataStore.data.map { preferences ->
             preferences[SKIP_SILENT] ?: FALSE
@@ -1772,6 +1798,8 @@ internal class DataStoreManagerImpl(
         val DOWNLOAD_QUALITY = stringPreferencesKey("download_quality")
         val VIDEO_DOWNLOAD_QUALITY = stringPreferencesKey("video_download_quality")
         val NORMALIZE_VOLUME = stringPreferencesKey("normalize_volume")
+        val LYRICS_UDP_ENABLED = stringPreferencesKey("lyrics_udp_enabled")
+        val VU_TCP_ENABLED = stringPreferencesKey("vu_tcp_enabled")
         val SKIP_SILENT = stringPreferencesKey("skip_silent")
         val SAVE_STATE_OF_PLAYBACK = stringPreferencesKey("save_state_of_playback")
         val SAVE_RECENT_SONG = stringPreferencesKey("save_recent_song")

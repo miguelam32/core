@@ -75,6 +75,14 @@ interface DataStoreManager {
 
     suspend fun setNormalizeVolume(normalize: Boolean)
 
+    val lyricsUdpEnabled: Flow<String>
+
+    suspend fun setLyricsUdpEnabled(enabled: Boolean)
+
+    val vuTcpEnabled: Flow<String>
+
+    suspend fun setVuTcpEnabled(enabled: Boolean)
+
     val skipSilent: Flow<String>
 
     suspend fun setSkipSilent(skip: Boolean)

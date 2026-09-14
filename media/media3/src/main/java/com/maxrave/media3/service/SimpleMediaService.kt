@@ -128,11 +128,17 @@ internal class SimpleMediaService :
         var mzkLastSongArtist = ""
         var mzkLastSongDurationMs = 0L
         var mzkSongResendTick = 0
+        var mzkLyricsExportEnabled = false
+        coroutineScope.launch {
+            dataStoreManager.lyricsUdpEnabled.collect { value ->
+                mzkLyricsExportEnabled = (value == DataStoreManager.TRUE)
+            }
+        }
         player.addListener(object : Player.Listener {
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
                 val videoId = mediaItem?.mediaId?.substringAfterLast("/")
                 mzkLyricsJob?.cancel()
-                if (videoId != null) {
+                if (videoId != null && mzkLyricsExportEnabled) {
                     val artist = mediaItem?.mediaMetadata?.artist?.toString() ?: ""
                     val title = mediaItem?.mediaMetadata?.title?.toString() ?: ""
                     val durationMsForSong = player.duration.takeIf { it != androidx.media3.common.C.TIME_UNSET } ?: 0L
@@ -221,7 +227,7 @@ internal class SimpleMediaService :
 
         coroutineScope.launch {
             while (isActive) {
-                if (player.isPlaying) {
+                if (player.isPlaying && mzkLyricsExportEnabled) {
                     LyricsUdpExporter.sendPosition(player.currentPosition)
                     mzkSongResendTick++
                     if (mzkSongResendTick >= 20 && mzkLastSongTitle.isNotEmpty()) {

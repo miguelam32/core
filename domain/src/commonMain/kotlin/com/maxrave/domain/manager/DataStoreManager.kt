@@ -63,10 +63,12 @@ interface DataStoreManager {
     val loggedIn: Flow<String>
     val cookie: Flow<String>
     val pageId: Flow<String>
+    val authUser: Flow<Int>
 
     suspend fun setCookie(
         cookie: String,
         pageId: String?,
+        authUser: Int = 0,
     )
 
     suspend fun setLoggedIn(logged: Boolean)
@@ -199,6 +201,14 @@ interface DataStoreManager {
     val equalizerPreamp: Flow<Float>
 
     suspend fun setEqualizerPreamp(preampDb: Float)
+
+    /**
+     * One of [EQUALIZER_TYPE_BUILT_IN], [EQUALIZER_TYPE_SYSTEM]. Android only — Desktop has no system
+     * equalizer and always runs the built-in one. The two never run together.
+     */
+    val equalizerType: Flow<String>
+
+    suspend fun setEqualizerType(type: String)
 
     /**
      * The AutoEq profile last imported, as `"<label>\n<comma-separated gains>"`.
@@ -634,6 +644,9 @@ interface DataStoreManager {
 
         const val LYRICS_STYLE_CLASSIC = "CLASSIC"
         const val LYRICS_STYLE_APPLE_MUSIC = "APPLE_MUSIC"
+
+        const val EQUALIZER_TYPE_BUILT_IN = "BUILT_IN"
+        const val EQUALIZER_TYPE_SYSTEM = "SYSTEM"
 
         const val CROSSFADE_DURATION_AUTO = 0
 

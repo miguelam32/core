@@ -191,14 +191,21 @@ internal class DataStoreManagerImpl(
             preferences[PAGE_ID] ?: ""
         }
 
+    override val authUser: Flow<Int> =
+        settingsDataStore.data.map { preferences ->
+            preferences[AUTH_USER] ?: 0
+        }
+
     override suspend fun setCookie(
         cookie: String,
         pageId: String?,
+        authUser: Int,
     ) {
         withContext(Dispatchers.IO) {
             settingsDataStore.edit { settings ->
                 settings[COOKIE] = cookie
                 settings[PAGE_ID] = pageId ?: ""
+                settings[AUTH_USER] = authUser
             }
         }
     }
@@ -629,6 +636,19 @@ internal class DataStoreManagerImpl(
         withContext(Dispatchers.IO) {
             settingsDataStore.edit { settings ->
                 settings[EQUALIZER_PREAMP] = preampDb.toString()
+            }
+        }
+    }
+
+    override val equalizerType =
+        settingsDataStore.data.map { preferences ->
+            preferences[EQUALIZER_TYPE] ?: DataStoreManager.EQUALIZER_TYPE_BUILT_IN
+        }
+
+    override suspend fun setEqualizerType(type: String) {
+        withContext(Dispatchers.IO) {
+            settingsDataStore.edit { settings ->
+                settings[EQUALIZER_TYPE] = type
             }
         }
     }
@@ -1790,6 +1810,7 @@ internal class DataStoreManagerImpl(
         val COOKIE = stringPreferencesKey("cookie")
 
         val PAGE_ID = stringPreferencesKey("page_id")
+        val AUTH_USER = intPreferencesKey("auth_user")
         val LOGGED_IN = stringPreferencesKey("logged_in")
         val LOCATION = stringPreferencesKey("location")
         val MOOD_AND_GENRES_CACHE = stringPreferencesKey("mood_and_genres_cache")
@@ -1834,6 +1855,7 @@ internal class DataStoreManagerImpl(
         val EQUALIZER_AUTOEQ_PROFILE = stringPreferencesKey("equalizer_autoeq_profile")
         val EQUALIZER_BANDS = stringPreferencesKey("equalizer_bands")
         val EQUALIZER_ENABLED = stringPreferencesKey("equalizer_enabled")
+        val EQUALIZER_TYPE = stringPreferencesKey("equalizer_type")
         val EQUALIZER_PREAMP = stringPreferencesKey("equalizer_preamp")
         val DELAY_ENABLED = stringPreferencesKey("delay_enabled")
         val DELAY_TIME_MS = stringPreferencesKey("delay_time_ms")

@@ -36,6 +36,8 @@ import com.maxrave.media3.audio.ConvolutionReverbAudioProcessor
 import com.maxrave.media3.audio.CrossfadeFilterAudioProcessor
 import com.maxrave.media3.audio.EchoAudioProcessor
 import com.maxrave.media3.audio.EqualizerAudioProcessor
+import com.maxrave.media3.audio.PcmTapAudioProcessor
+import com.maxrave.media3.extension.PcmUdpExporter
 import com.maxrave.media3.audio.EqualizerCurve
 import com.maxrave.media3.audio.SleepFadeAudioProcessor
 import com.maxrave.media3.exoplayer.CrossfadeExoPlayerAdapter.Companion.SPEED_PITCH_STEP
@@ -99,6 +101,10 @@ internal class CrossfadeExoPlayerAdapter(
 
     // ========== Crossfade Settings (loaded from DataStore) ==========
 
+    /** Leido por cada instancia de PcmTapAudioProcessor -- togglea el chip "IC" de Home. */
+    @Volatile
+    private var internalVuTapEnabled = false
+
     init {
         coroutineScope.launch {
             dataStoreManager.crossfadeEnabled.collect { enabled ->
@@ -128,6 +134,12 @@ internal class CrossfadeExoPlayerAdapter(
             dataStoreManager.crossfadeSkipAlbum.collect { enabled ->
                 skipCrossfadeInAlbum = (enabled == DataStoreManager.TRUE)
                 Logger.d(TAG, "Skip crossfade inside album: $skipCrossfadeInAlbum")
+            }
+        }
+        coroutineScope.launch {
+            dataStoreManager.vuTcpEnabled.collect { enabled ->
+                internalVuTapEnabled = (enabled == DataStoreManager.TRUE)
+                Logger.d(TAG, "VU tap (PCM UDP) enabled: $internalVuTapEnabled")
             }
         }
     }
@@ -528,6 +540,7 @@ internal class CrossfadeExoPlayerAdapter(
         val equalizer = EqualizerAudioProcessor { internalEqualizerCurve }
         val echo = EchoAudioProcessor { internalAudioEffects }
         val reverb = ConvolutionReverbAudioProcessor { internalAudioEffects }
+        val vuTap = PcmTapAudioProcessor { internalVuTapEnabled }
 
         val perPlayerRenderers =
             object : DefaultRenderersFactory(context) {
@@ -551,7 +564,7 @@ internal class CrossfadeExoPlayerAdapter(
                                 // crossfade has to be able to sweep them out along with it rather
                                 // than the other way round. The sleep fade stays last, because it
                                 // is the master attenuation and has to survive everything above.
-                                arrayOf(equalizer, echo, reverb, crossfadeFilter, sleepFade),
+                                arrayOf(equalizer, echo, reverb, crossfadeFilter, sleepFade, vuTap),
                                 SilenceSkippingAudioProcessor(
                                     2_000_000,
                                     (20_000 / 2_000_000).toFloat(),
@@ -2017,6 +2030,10 @@ internal class CrossfadeExoPlayerAdapter(
                 val nextVideoId = nextMediaItem.mediaId
 
                 Logger.d(TAG, "Starting crossfade to track $nextIndex")
+
+                if (internalVuTapEnabled) {
+                    PcmUdpExporter.sendTransition()
+                }
 
                 // Get or create secondary player
                 val cachedPlayerEntry = precachedPlayers.remove(nextVideoId)

@@ -9,6 +9,9 @@ import kotlinx.datetime.LocalTime
 import kotlinx.datetime.Month
 
 object Config {
+    /** Anything else is our APK renamed and re-signed by someone. */
+    val OFFICIAL_PACKAGE_NAMES = setOf("com.maxrave.simpmusic", "com.maxrave.simpmusic.dev")
+
     const val SPOTIFY_LOG_IN_URL: String = "https://accounts.spotify.com/en/login"
     const val SPOTIFY_ACCOUNT_URL = "https://accounts.spotify.com/en/status"
     const val YOUTUBE_MUSIC_MAIN_URL = "https://music.youtube.com/"
@@ -181,6 +184,8 @@ object SUPPORTED_LANGUAGE {
             "Català",
             "فارسی",
             "български",
+            "Svenska",
+            "Hrvatski",
         )
     val codes: Array<String> =
         arrayOf(
@@ -210,6 +215,8 @@ object SUPPORTED_LANGUAGE {
             "ca-ES",
             "fa-AF",
             "bg-BG",
+            "sv-SE",
+            "hr-HR",
         )
 
     fun getLanguageFromCode(code: String?): String {

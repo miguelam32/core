@@ -1,5 +1,7 @@
 package com.maxrave.domain.mediaservice.handler
 
+import com.maxrave.domain.utils.isRadioQueueId
+
 /**
  * How many already-played tracks a radio queue keeps behind the current one.
  *
@@ -20,11 +22,30 @@ object RadioQueueTrim {
      * Trim only once the history passes this. The gap to [KEEP_HISTORY] is what keeps the trim from
      * running on every single track change, which would put back the per-item storm it avoids.
      *
-     * It is a floor, not a ceiling: the check runs right after a batch append, which happens at
-     * roughly every 50th track, so in practice the history grows to ~197 before the first cut and
-     * then swings between 100 and ~197.
+     * 120, not the 150 the history is meant to stay under: the check runs right after a batch
+     * append and a radio appends roughly every 50th track, so a threshold is only ever crossed at
+     * ~47, ~97, ~147, ~197… A 150 here would skip the 147 pass and let the history reach ~197
+     * before the first cut. At 120 the cut lands at ~147 and the history then swings 100…~147.
      */
-    const val TRIM_ABOVE_HISTORY = 150
+    const val TRIM_ABOVE_HISTORY = 120
+
+    /**
+     * Whether a queue is a radio at all — the only kind of queue that is ever trimmed.
+     *
+     * The type alone does not say so. Favorites, Downloaded, Most played, Monthly recap, Your top
+     * tracks, the Analytics lists and a playlist's Shuffle are all queued as [PlaylistType.RADIO]
+     * too, and every one of them is a finite list the user picked. What a real radio also has is a
+     * YouTube radio id it keeps extending from: `RD…`, minus `RDCLAK…`, which is a curated playlist
+     * with an end.
+     */
+    fun appliesTo(
+        playlistType: PlaylistType?,
+        playlistId: String?,
+    ): Boolean =
+        playlistType == PlaylistType.RADIO &&
+            playlistId != null &&
+            playlistId.isRadioQueueId() &&
+            !playlistId.removePrefix("VL").startsWith("RDCLAK")
 
     /**
      * How many tracks to drop from the FRONT of a radio queue, or 0 when it should be left alone.
@@ -40,5 +61,25 @@ object RadioQueueTrim {
         if (currentIndex <= TRIM_ABOVE_HISTORY) return 0
         if (queueSize <= KEEP_HISTORY || currentIndex >= queueSize) return 0
         return (currentIndex - KEEP_HISTORY).coerceAtMost(queueSize - 1)
+    }
+
+    /**
+     * [queue] once the player has removed [removedIds] from the front of its own list, or null when
+     * those are not the tracks leading [queue].
+     *
+     * Null means the queue changed while the removal was on its way, and cutting it anyway would
+     * shift every row against the player — the "tap a row, play another song" bug. Ids repeat in a
+     * radio, which is why the match is positional and not a set lookup.
+     */
+    fun <T> afterFrontRemoved(
+        queue: List<T>,
+        removedIds: List<String>,
+        idOf: (T) -> String,
+    ): List<T>? {
+        if (removedIds.size > queue.size) return null
+        for (i in removedIds.indices) {
+            if (idOf(queue[i]) != removedIds[i]) return null
+        }
+        return queue.drop(removedIds.size)
     }
 }

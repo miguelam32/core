@@ -9,6 +9,7 @@ import androidx.room.Transaction
 import androidx.room.Update
 import com.maxrave.domain.data.entities.AlbumEntity
 import com.maxrave.domain.data.entities.ArtistEntity
+import com.maxrave.domain.data.entities.ArtistMotionEntity
 import com.maxrave.domain.data.entities.AutoEqCurveEntity
 import com.maxrave.domain.data.entities.AutoEqEntryEntity
 import com.maxrave.domain.data.entities.AutoEqIndexMetaEntity
@@ -232,6 +233,22 @@ interface DatabaseDao {
         offset: Int,
     ): List<SongEntity>
 
+    /**
+     * Liked songs crediting [channelId] anywhere in their artist list — the "Liked songs" row on an
+     * artist's page and the list it opens (issue #2524).
+     *
+     * `artistId` is a converted `List<String>` stored as a JSON array, so the id is matched as a
+     * quoted token with the same `replace()` + ESCAPE '\' treatment as [deleteUnfollowedArtists]:
+     * channel ids contain `_`, which LIKE would otherwise read as a wildcard.
+     *
+     * A Flow, unlike [getLikedSongs], so liking or unliking a song updates the row straight away.
+     */
+    @Query(
+        "SELECT * FROM song WHERE liked = 1 AND artistId LIKE " +
+            "'%\"' || replace(replace(replace(:channelId, '\\', '\\\\'), '_', '\\_'), '%', '\\%') || '\"%' ESCAPE '\\'",
+    )
+    fun getLikedSongsByArtist(channelId: String): Flow<List<SongEntity>>
+
     @Query("SELECT * FROM song WHERE videoId = :videoId")
     suspend fun getSong(videoId: String): SongEntity?
 
@@ -437,6 +454,17 @@ interface DatabaseDao {
         nameLogoUrl: String?,
         nameLogoColor: String?,
     )
+
+    /**
+     * A row here means the artist has been *asked about*, not that they have a video — all four
+     * urls are null for the roughly two artists in five that Apple Music carries no motion for.
+     * Without that, the two requests behind it would run again on every visit to their page.
+     */
+    @Query("SELECT * FROM artist_motion WHERE channelId = :channelId")
+    suspend fun getArtistMotion(channelId: String): ArtistMotionEntity?
+
+    @Insert(onConflict = OnConflictStrategy.Companion.REPLACE)
+    suspend fun upsertArtistMotion(motion: ArtistMotionEntity)
 
     @Query("UPDATE artist SET followed = :followed, followedAt = :followedAt WHERE channelId = :channelId")
     suspend fun updateFollowed(
@@ -1150,6 +1178,18 @@ interface DatabaseDao {
      */
     @Query("DELETE FROM notification WHERE channelId NOT IN (SELECT channelId FROM artist WHERE followed = 1)")
     suspend fun deleteNotificationsOfUnfollowedArtists(): Int
+
+    /**
+     * Cached Apple Music motion for an artist whose row the sweep has just removed.
+     *
+     * Keyed on the artist row rather than on the follow, unlike the two statements above: a motion
+     * row costs a few hundred bytes and is only ever read by that artist's page, so an artist kept
+     * because a liked or downloaded song credits them keeps their animated header too. Run AFTER
+     * [deleteUnfollowedArtists], or it measures against rows that are about to disappear.
+     * `artist.channelId` is NOT NULL, so the subquery cannot smuggle a NULL into the NOT IN.
+     */
+    @Query("DELETE FROM artist_motion WHERE channelId NOT IN (SELECT channelId FROM artist)")
+    suspend fun deleteOrphanedArtistMotion(): Int
 
     /** The new-releases tracking row for an artist the user no longer follows. See [deleteNotificationsOfUnfollowedArtists]. */
     @Query("DELETE FROM followed_artist_single_and_album WHERE channelId NOT IN (SELECT channelId FROM artist WHERE followed = 1)")

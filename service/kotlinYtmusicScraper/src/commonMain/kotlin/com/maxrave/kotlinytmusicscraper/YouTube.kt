@@ -5,6 +5,8 @@ import com.maxrave.common.ITAG
 import com.maxrave.kotlinytmusicscraper.YouTube.Companion.DEFAULT_VISITOR_DATA
 import com.maxrave.kotlinytmusicscraper.extension.toListFormat
 import com.maxrave.kotlinytmusicscraper.extractor.ExtractSource
+import com.maxrave.kotlinytmusicscraper.extractor.contentLengthOf
+import com.maxrave.kotlinytmusicscraper.extractor.orderByAudioTrack
 import com.maxrave.kotlinytmusicscraper.models.AccountInfo
 import com.maxrave.kotlinytmusicscraper.models.AlbumItem
 import com.maxrave.kotlinytmusicscraper.models.Artist
@@ -109,8 +111,11 @@ import kotlinx.datetime.daysUntil
 import kotlinx.datetime.toLocalDateTime
 import kotlinx.datetime.todayIn
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import okio.Path
 import kotlin.jvm.JvmInline
@@ -448,7 +453,7 @@ class YouTube {
                         emptyList()
                     },
                 description =
-                    getDescriptionAlbum(
+                    getDescription(
                         response.contents.twoColumnBrowseResultsRenderer.tabs
                             .firstOrNull()
                             ?.tabRenderer
@@ -504,11 +509,16 @@ class YouTube {
             )
         }
 
-    private fun getDescriptionAlbum(runs: List<Run>?): String {
+    /**
+     * Joins every run of a description. A link run contributes its `urlEndpoint` URL rather than
+     * its text, which YouTube shortens for display (`…/wiki/Ariana_...`) — the description view
+     * makes URLs clickable, and the shortened form would open the wrong page.
+     */
+    private fun getDescription(runs: List<Run>?): String {
         var description = ""
         if (!runs.isNullOrEmpty()) {
             for (run in runs) {
-                description += run.text
+                description += run.navigationEndpoint?.urlEndpoint?.url ?: run.text
             }
         }
         Logger.d("description", description)
@@ -614,13 +624,14 @@ class YouTube {
                         ?.sectionListRenderer
                         ?.contents
                         ?.mapNotNull(ArtistPage::fromSectionListRendererContent)!!,
+                // Every run, not just the first: YouTube splits the text at each link, so the first
+                // run alone stops at "From Wikipedia (".
                 description =
                     response.header
                         ?.musicImmersiveHeaderRenderer
                         ?.description
                         ?.runs
-                        ?.firstOrNull()
-                        ?.text,
+                        ?.let(::getDescription),
                 subscribers =
                     response.header
                         ?.musicImmersiveHeaderRenderer
@@ -886,6 +897,17 @@ class YouTube {
     suspend fun checkForFdroidUpdate(): Result<FdroidResponse> =
         runCatching {
             ytMusic.checkForFdroidUpdate().body<FdroidResponse>()
+        }
+
+    /**
+     * SHA-256 of our release signing certificates: F-Droid ships the APK we sign, so it pins our keys.
+     * The field is either one inline value or a YAML list (`- <hex>` per line), e.g. after a key rotation.
+     */
+    suspend fun getFdroidSigningKeys(): Result<List<String>> =
+        runCatching {
+            val metadata = ytMusic.fdroidMetadata().bodyAsText()
+            val field = checkNotNull(Regex("""AllowedAPKSigningKeys:((?:\s*-?\s*[0-9a-f]{64})+)""").find(metadata)).groupValues[1]
+            Regex("[0-9a-f]{64}").findAll(field).map { it.value }.toList()
         }
 
     suspend fun newRelease(): Result<ExplorePage> =
@@ -1288,6 +1310,7 @@ class YouTube {
     suspend fun newPipePlayer(
         videoId: String,
         tempRes: PlayerResponse,
+        preferredAudioLanguage: String? = null,
     ): PlayerResponse? {
         val listUrlSig = mutableListOf<String>()
         var decodedSigResponse: PlayerResponse?
@@ -1298,7 +1321,7 @@ class YouTube {
         } else {
             sigResponse = tempRes
         }
-        val streamsList = ytMusic.getNewPipePlayer(videoId)
+        val streamsList = ytMusic.getNewPipePlayer(videoId).orderByAudioTrack(preferredAudioLanguage)
         if (streamsList.isEmpty()) return null
 
         decodedSigResponse =
@@ -1307,14 +1330,18 @@ class YouTube {
                     sigResponse.streamingData?.copy(
                         formats =
                             sigResponse.streamingData.formats?.map { format ->
+                                val url = streamsList.find { it.first == format.itag }?.second
                                 format.copy(
-                                    url = streamsList.find { it.first == format.itag }?.second,
+                                    url = url,
+                                    contentLength = url?.let(::contentLengthOf) ?: format.contentLength,
                                 )
                             },
                         adaptiveFormats =
                             sigResponse.streamingData.adaptiveFormats.map { adaptiveFormats ->
+                                val url = streamsList.find { it.first == adaptiveFormats.itag }?.second
                                 adaptiveFormats.copy(
-                                    url = streamsList.find { it.first == adaptiveFormats.itag }?.second,
+                                    url = url,
+                                    contentLength = url?.let(::contentLengthOf) ?: adaptiveFormats.contentLength,
                                 )
                             },
                         hlsManifestUrl = streamsList.firstOrNull { it.first == 96 }?.second,
@@ -1389,11 +1416,71 @@ class YouTube {
 
     fun isManifestUrl(url: String): Boolean = url.contains(".m3u8") || url.contains(".mpd") || url.contains("manifest")
 
+    /**
+     * The HLS playlist a live broadcast plays from — see [Ytmusic.liveStreamPlayer] for which
+     * client asks for it and why. Read as plain JSON: only one field is needed, and that client's
+     * response is not guaranteed to fit [PlayerResponse]'s non-null fields.
+     */
+    private suspend fun liveStreamHlsUrl(videoId: String): String? =
+        runCatching {
+            // A fresh visitor id every time, fetched without the session (sw.js_data sends no
+            // cookie), so this cookie-less request stays anonymous end to end — see
+            // Ytmusic.liveStreamPlayer.
+            val anonymousVisitorData =
+                visitorData() ?: run {
+                    Logger.w(TAG, "No anonymous visitorData for the live stream request of $videoId")
+                    return@runCatching null
+                }
+            val response = ytMusic.liveStreamPlayer(videoId, anonymousVisitorData).body<JsonObject>()
+            val status =
+                response["playabilityStatus"]
+                    ?.jsonObject
+                    ?.get("status")
+                    ?.jsonPrimitive
+                    ?.contentOrNull
+            if (status != "OK") {
+                Logger.w(TAG, "Live stream request for $videoId: $status")
+                return@runCatching null
+            }
+            response["streamingData"]
+                ?.jsonObject
+                ?.get("hlsManifestUrl")
+                ?.jsonPrimitive
+                ?.contentOrNull
+        }.onFailure {
+            Logger.w(TAG, "Live stream request failed for $videoId: ${it.message}")
+        }.getOrNull()
+            ?.also { Logger.d(TAG, "live HLS from the Android client for $videoId") }
+
+    /**
+     * This response reduced to what a live broadcast plays from: its HLS playlist and nothing else.
+     * The fixed-length formats are dropped so nothing downstream picks one by mistake, and the status
+     * reads OK because the playlist came from an extractor even when this client was refused.
+     */
+    private fun PlayerResponse.asLiveStream(liveHlsUrl: String): PlayerResponse =
+        copy(
+            playabilityStatus = playabilityStatus.copy(status = "OK", reason = null),
+            streamingData =
+                (
+                    streamingData ?: PlayerResponse.StreamingData(
+                        hlsManifestUrl = null,
+                        formats = null,
+                        adaptiveFormats = emptyList(),
+                        expiresInSeconds = 0,
+                    )
+                ).copy(
+                    hlsManifestUrl = liveHlsUrl,
+                    formats = emptyList(),
+                    adaptiveFormats = emptyList(),
+                ),
+        )
+
     @OptIn(ExperimentalTime::class)
     suspend fun player(
         videoId: String,
         playlistId: String? = null,
         noLogIn: Boolean = false,
+        preferredAudioLanguage: String? = null,
     ): Result<Triple<String?, PlayerResponse, MediaType>> =
         runCatching {
             val cpn =
@@ -1479,7 +1566,20 @@ class YouTube {
                         )
                     }
 
-            val response = newPipePlayer(videoId, tempRes)
+            // A live broadcast has no fixed-length formats to decode: it plays from one HLS
+            // playlist. videoDetails is present even on a response this client was refused, so the
+            // check comes before anything that requires an OK status.
+            if (tempRes.videoDetails?.isLive == true) {
+                // tempRes carries an hlsManifestUrl of its own, and it is deliberately not used: the
+                // web clients' live playlists load, but every segment is refused with 403.
+                val liveHlsUrl =
+                    liveStreamHlsUrl(videoId)
+                        ?: ytMusic.getLiveHlsUrl(videoId)
+                        ?: throw RuntimeException("No live HLS URL found for $videoId")
+                return@runCatching Triple(cpn, tempRes.asLiveStream(liveHlsUrl), MediaType.Video)
+            }
+
+            val response = newPipePlayer(videoId, tempRes, preferredAudioLanguage)
             if (response != null) {
                 decodedSigResponse = response
                 Logger.d(TAG, "YouTube Player found URL")
@@ -1677,11 +1777,8 @@ class YouTube {
                             result.copy(
                                 title = playlistPanelRenderer.title,
                                 items =
-                                    playlistPanelRenderer.contents.mapNotNull {
-                                        it.track?.let { renderer ->
-                                            NextPage.fromPlaylistPanelVideoRenderer(renderer)
-                                        }
-                                    } + result.items,
+                                    playlistPanelRenderer.contents.mapNotNull(NextPage::fromPlaylistPanelContent) +
+                                        result.items,
                                 lyricsEndpoint =
                                     response.contents.singleColumnMusicWatchNextResultsRenderer
                                         ?.tabbedRenderer
@@ -1719,10 +1816,7 @@ class YouTube {
 //        }
                 return@runCatching NextResult(
                     title = playlistPanelRenderer.title,
-                    items =
-                        playlistPanelRenderer.contents.mapNotNull {
-                            it.track?.let(NextPage::fromPlaylistPanelVideoRenderer)
-                        },
+                    items = playlistPanelRenderer.contents.mapNotNull(NextPage::fromPlaylistPanelContent),
                     currentIndex = playlistPanelRenderer.currentIndex,
                     lyricsEndpoint =
                         response.contents.singleColumnMusicWatchNextResultsRenderer

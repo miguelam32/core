@@ -2,6 +2,8 @@ package com.maxrave.domain.mediaservice.handler
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -29,8 +31,8 @@ class RadioQueueTrimTest {
 
     @Test
     fun `trims down to the kept history once above the threshold`() {
-        assertEquals(51, RadioQueueTrim.countToDropFromFront(currentIndex = 151, queueSize = 200))
-        assertEquals(60, RadioQueueTrim.countToDropFromFront(currentIndex = 160, queueSize = 210))
+        assertEquals(21, RadioQueueTrim.countToDropFromFront(currentIndex = 121, queueSize = 200))
+        assertEquals(47, RadioQueueTrim.countToDropFromFront(currentIndex = 147, queueSize = 200))
         assertEquals(99, RadioQueueTrim.countToDropFromFront(currentIndex = 199, queueSize = 200))
     }
 
@@ -46,8 +48,44 @@ class RadioQueueTrimTest {
     }
 
     @Test
+    fun `trims only real radios and never a list the user picked`() {
+        // Song, endpoint and artist radios.
+        assertTrue(RadioQueueTrim.appliesTo(PlaylistType.RADIO, "RDAMVMdQw4w9WgXcQ"))
+        assertTrue(RadioQueueTrim.appliesTo(PlaylistType.RADIO, "RDEMabc"))
+        assertTrue(RadioQueueTrim.appliesTo(PlaylistType.RADIO, "RDATabc"))
+        // Favorites, Downloaded, Most played, Monthly recap and the Analytics lists: RADIO, no id.
+        assertFalse(RadioQueueTrim.appliesTo(PlaylistType.RADIO, null))
+        // A playlist's Shuffle plays from the playlist's own id.
+        assertFalse(RadioQueueTrim.appliesTo(PlaylistType.RADIO, "PLabc"))
+        // A curated playlist is RD-prefixed but finite, with or without the library's VL prefix.
+        assertFalse(RadioQueueTrim.appliesTo(PlaylistType.RADIO, "RDCLAK5uy_abc"))
+        assertFalse(RadioQueueTrim.appliesTo(PlaylistType.RADIO, "VLRDCLAK5uy_abc"))
+        // Not a radio until Endless queue re-types it.
+        assertFalse(RadioQueueTrim.appliesTo(PlaylistType.PLAYLIST, "RDAMVMabc"))
+        assertFalse(RadioQueueTrim.appliesTo(null, "RDAMVMabc"))
+    }
+
+    @Test
+    fun `cuts the mirrored queue only when the removed tracks are its front`() {
+        val queue = listOf("a", "b", "a", "c", "d")
+        assertEquals(
+            listOf("a", "c", "d"),
+            RadioQueueTrim.afterFrontRemoved(queue, listOf("a", "b")) { it },
+        )
+        // A song the radio repeated is matched by position, not by id alone.
+        assertEquals(
+            listOf("c", "d"),
+            RadioQueueTrim.afterFrontRemoved(queue, listOf("a", "b", "a")) { it },
+        )
+        // The queue changed under the request: leave it, never cut it out of step.
+        assertNull(RadioQueueTrim.afterFrontRemoved(queue, listOf("b", "a")) { it })
+        assertNull(RadioQueueTrim.afterFrontRemoved(queue, listOf("a", "c")) { it })
+        assertNull(RadioQueueTrim.afterFrontRemoved(listOf("a"), listOf("a", "b")) { it })
+    }
+
+    @Test
     fun `keeps the playing track and exactly the kept history behind it`() {
-        for (currentIndex in 151..400) {
+        for (currentIndex in 121..400) {
             val queueSize = currentIndex + 50
             val dropped = RadioQueueTrim.countToDropFromFront(currentIndex, queueSize)
             assertTrue(dropped > 0, "should trim at index $currentIndex")

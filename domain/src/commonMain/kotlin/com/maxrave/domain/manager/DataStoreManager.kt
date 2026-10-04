@@ -53,6 +53,14 @@ interface DataStoreManager {
 
     suspend fun setMoodArtworkCache(json: String)
 
+    /**
+     * The AI's reading of the listener's taste behind the Library card, as serialized JSON. Null
+     * until the first reading, and set back to null when the listening history is cleared.
+     */
+    val tasteProfile: Flow<String?>
+
+    suspend fun setTasteProfile(json: String?)
+
     fun getString(key: String): Flow<String?>
 
     suspend fun putString(
@@ -334,10 +342,6 @@ interface DataStoreManager {
 
     suspend fun setChartKey(key: String)
 
-    val translucentBottomBar: Flow<String>
-
-    suspend fun setTranslucentBottomBar(translucent: Boolean)
-
     val usingProxy: Flow<String>
 
     suspend fun setUsingProxy(usingProxy: Boolean)
@@ -472,6 +476,16 @@ interface DataStoreManager {
     val youtubeSubtitleLanguage: Flow<String>
 
     suspend fun setYoutubeSubtitleLanguage(language: String)
+
+    /**
+     * Language code (e.g. "vi") of the audio track to prefer on videos that ship several — dubbed
+     * podcasts, mostly. Empty means the original track. Deliberately NOT defaulted to the app
+     * language the way [youtubeSubtitleLanguage] is: that would swap the speaker's own voice for an
+     * AI dub for every user whose app language has one.
+     */
+    val preferredAudioLanguage: Flow<String>
+
+    suspend fun setPreferredAudioLanguage(language: String)
 
     val helpBuildLyricsDatabase: Flow<String>
 

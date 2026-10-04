@@ -2,6 +2,7 @@ package com.maxrave.media3.exoplayer
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.media.AudioDeviceInfo
 import android.media.AudioFocusRequest
 import android.media.AudioManager
 import androidx.media3.common.AudioAttributes
@@ -20,9 +21,11 @@ import androidx.media3.exoplayer.audio.AudioSink
 import androidx.media3.exoplayer.audio.DefaultAudioSink
 import androidx.media3.exoplayer.audio.SilenceSkippingAudioProcessor
 import com.maxrave.domain.data.player.AudioEffects
+import com.maxrave.domain.data.player.AudioOutput
 import com.maxrave.domain.data.player.GenericCastState
 import com.maxrave.domain.data.player.GenericMediaItem
 import com.maxrave.domain.data.player.GenericPlaybackParameters
+import com.maxrave.domain.data.player.LiveStreamRegistry
 import com.maxrave.domain.data.player.PlayerConstants
 import com.maxrave.domain.data.player.PlayerError
 import com.maxrave.domain.extension.isVideo
@@ -40,6 +43,7 @@ import com.maxrave.media3.audio.PcmTapAudioProcessor
 import com.maxrave.media3.extension.PcmUdpExporter
 import com.maxrave.media3.audio.EqualizerCurve
 import com.maxrave.media3.audio.SleepFadeAudioProcessor
+import com.maxrave.media3.service.mediasourcefactory.isLiveStreamDetected
 import com.maxrave.media3.exoplayer.CrossfadeExoPlayerAdapter.Companion.SPEED_PITCH_STEP
 import com.maxrave.media3.service.mediasourcefactory.MergingMediaSourceFactory
 import kotlinx.coroutines.CancellationException
@@ -47,6 +51,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -316,6 +321,31 @@ internal class CrossfadeExoPlayerAdapter(
 
     // VideoId -> PrecachedPlayer
     private val precachedPlayers = ConcurrentHashMap<String, PrecachedPlayer>()
+
+    // ========== Audio Output ==========
+
+    /**
+     * Where the sound leaves by — see [MediaPlayerInterface.audioOutputs]. The picked device goes to
+     * every player this adapter runs, and [createExoPlayerInstance] gives it to each new one, so the
+     * next track, a crossfade partner or a precached handle cannot slip back to the old output.
+     * Declared ahead of the first player built below, which reads it.
+     */
+    private val outputRouter = AudioOutputRouter(context) { device -> applyPreferredAudioDevice(device) }
+
+    override val audioOutputs: StateFlow<List<AudioOutput>>
+        get() = outputRouter.outputs
+
+    override fun selectAudioOutput(id: String?) = outputRouter.select(id)
+
+    override fun refreshAudioOutputs() = outputRouter.refresh()
+
+    private fun applyPreferredAudioDevice(device: AudioDeviceInfo?) {
+        coroutineScope.launch {
+            currentPlayer?.setPreferredAudioDevice(device)
+            secondaryPlayer?.setPreferredAudioDevice(device)
+            precachedPlayers.values.forEach { it.player.setPreferredAudioDevice(device) }
+        }
+    }
     private var precacheEnabled = true
     private val maxPrecacheCount = 2
     private var precacheJob: Job? = null
@@ -598,6 +628,10 @@ internal class CrossfadeExoPlayerAdapter(
                 .setRenderersFactory(perPlayerRenderers)
                 .build()
 
+        // The output the user picked, if any: a player built for the next track, a crossfade or a
+        // precache starts where the others are playing rather than back on the system's choice.
+        outputRouter.preferredDevice?.let { player.setPreferredAudioDevice(it) }
+
         return PlayerWithFilter(player, crossfadeFilter)
     }
 
@@ -719,6 +753,8 @@ internal class CrossfadeExoPlayerAdapter(
     }
 
     override fun seekTo(positionMs: Long) {
+        // A live broadcast is followed at its live edge: its seek bar shows LIVE, not a length.
+        if (isCurrentTrackLive()) return
         castRemotePlayer?.let { remote ->
             remote.seekTo(positionMs)
             cachedPosition = positionMs
@@ -820,7 +856,8 @@ internal class CrossfadeExoPlayerAdapter(
             // - Position <= 3s → go to previous track
             val positionThresholdMs = 3000L
             val position = currentPosition
-            if (position > positionThresholdMs) {
+            // A live broadcast has no start to go back to, so Previous always means the previous track.
+            if (position > positionThresholdMs && !isCurrentTrackLive()) {
                 Logger.d(TAG, "seekToPrevious: pos=${position}ms > ${positionThresholdMs}ms — seeking to start")
                 seekTo(0)
             } else if (hasPreviousMediaItem()) {
@@ -942,7 +979,13 @@ internal class CrossfadeExoPlayerAdapter(
             // earlier (a radio trimming its history) can shrink the playlist between an outside check
             // and this body — issue #2156's crash shape, fixed the same way in MpvPlayerAdapter.
             if (index !in playlist.indices) return@launch
+            // Where the track sat in the shuffled order, read before the order loses it.
+            val shuffledPos = if (internalShuffleModeEnabled) shuffleIndices.getOrNull(index) ?: -1 else -1
             val track = playlist.removeAt(index)
+            // Only this track leaves the shuffled order, before anything below reads the order.
+            // Rebuilding it here (createShuffleOrder) reshuffled the whole queue every time one track
+            // was removed with shuffle on.
+            if (internalShuffleModeEnabled) removeFromShuffleOrder(index)
 
             // Remove from precache
             precachedPlayers.remove(track.mediaId)?.let { cached ->
@@ -957,7 +1000,11 @@ internal class CrossfadeExoPlayerAdapter(
                 }
 
                 index == localCurrentMediaItemIndex -> {
-                    if (localCurrentMediaItemIndex >= playlist.size) {
+                    if (internalShuffleModeEnabled && shuffleOrder.isNotEmpty()) {
+                        // The track after it in the shuffled order takes over, not the next one in
+                        // the playlist: the removal shifted that track into the removed one's slot.
+                        localCurrentMediaItemIndex = shuffleOrder[shuffledPos.coerceIn(0, shuffleOrder.lastIndex)]
+                    } else if (localCurrentMediaItemIndex >= playlist.size) {
                         localCurrentMediaItemIndex = playlist.size - 1
                     }
                     if (localCurrentMediaItemIndex >= 0) {
@@ -971,10 +1018,6 @@ internal class CrossfadeExoPlayerAdapter(
                     clearPrecacheExceptCurrentInternal()
                     triggerPrecachingInternal()
                 }
-            }
-
-            if (internalShuffleModeEnabled) {
-                createShuffleOrder()
             }
 
             notifyTimelineChanged("TIMELINE_CHANGE_REASON_PLAYLIST_CHANGED")
@@ -1072,6 +1115,27 @@ internal class CrossfadeExoPlayerAdapter(
 
             notifyTimelineChanged("TIMELINE_CHANGE_REASON_PLAYLIST_CHANGED")
 
+            clearPrecacheExceptCurrentInternal()
+            triggerPrecachingInternal()
+        }
+    }
+
+    override fun moveShuffledItem(
+        fromShuffledIndex: Int,
+        toShuffledIndex: Int,
+    ) {
+        coroutineScope.launch {
+            // Same reason as removeMediaItem (issue #2156): checked against the order as it is now.
+            if (!internalShuffleModeEnabled) return@launch
+            if (fromShuffledIndex !in shuffleOrder.indices || toShuffledIndex !in shuffleOrder.indices) return@launch
+            // Only the play order moves. Playlist indices stay where they were, and with them the
+            // current index and the position a running crossfade would revert to.
+            shuffleOrder.add(toShuffledIndex, shuffleOrder.removeAt(fromShuffledIndex))
+            rebuildShuffleIndices()
+
+            notifyTimelineChanged("TIMELINE_CHANGE_REASON_PLAYLIST_CHANGED")
+
+            // What plays next may have changed.
             clearPrecacheExceptCurrentInternal()
             triggerPrecachingInternal()
         }
@@ -1446,6 +1510,7 @@ internal class CrossfadeExoPlayerAdapter(
         coroutineScope.cancel()
         cleanupCurrentPlayerInternal()
         clearAllPrecacheInternal()
+        outputRouter.release()
         listeners.clear()
     }
 
@@ -1585,8 +1650,19 @@ internal class CrossfadeExoPlayerAdapter(
                         )
                     }
 
-                    // Use precached player if available
-                    val cachedPlayerEntry = precachedPlayers.remove(videoId)
+                    // Use precached player if available — unless it already failed. A precache that
+                    // ran into a live broadcast holds nothing playable (its progressive source threw
+                    // LiveStreamDetectedException while nobody was listening), so it is dropped and
+                    // the track is built afresh, which now gives it an HLS source.
+                    val cachedPlayerEntry =
+                        precachedPlayers.remove(videoId)?.let { cached ->
+                            if (cached.player.playerError == null) {
+                                cached
+                            } else {
+                                cached.player.release()
+                                null
+                            }
+                        }
                     val player: ExoPlayer
                     val playerFilter: CrossfadeFilterAudioProcessor?
                     if (cachedPlayerEntry?.player != null) {
@@ -1782,6 +1858,17 @@ internal class CrossfadeExoPlayerAdapter(
                             error.errorCode == PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND
 
                     val currentVideoId = playlist.getOrNull(localCurrentMediaItemIndex)?.mediaId
+                    // The progressive resolver found this track to be a live broadcast. Loading it
+                    // again builds an HLS source instead — see LiveStreamDetectedException. Not a
+                    // retry, and not counted as one: it is a different source, not the same one again.
+                    if (error.isLiveStreamDetected() && currentVideoId != null) {
+                        Logger.w(TAG, "$currentVideoId is a live stream; loading it again as HLS")
+                        coroutineScope.launch {
+                            precachedPlayers.remove(currentVideoId)?.player?.release()
+                            loadAndPlayTrackInternal(localCurrentMediaItemIndex, 0L, shouldPlay = true)
+                        }
+                        return
+                    }
                     if (error.errorCode == PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND) {
                         // Without this the crash report is a bare FileDataSourceException with
                         // nothing tying it back to a cache decision made three layers up.
@@ -1985,6 +2072,12 @@ internal class CrossfadeExoPlayerAdapter(
     /** Same skip rule for the CURRENT track: a video should play out to its last frame instead of fading out under the incoming song. */
     private fun isCurrentTrackVideo(): Boolean = watchVideoEnabled && currentMediaItem?.isVideo() == true
 
+    /** A live broadcast never reaches an end to fade out of, and its "remaining time" is only how far behind the live edge it is. */
+    private fun isCurrentTrackLive(): Boolean = currentMediaItem?.mediaId?.let(LiveStreamRegistry::isLive) == true
+
+    /** Nor can a live broadcast fade in: its HLS source is not one a crossfade can prepare ahead of time. */
+    private fun isNextTrackLive(): Boolean = playlist.getOrNull(getNextMediaItemIndex())?.mediaId?.let(LiveStreamRegistry::isLive) == true
+
     /**
      * Crossfade needs a track long enough that both sides of the blend are still worth hearing. At
      * the default 5s fade a 20s track would spend half its length fading in or out, and a longer
@@ -2040,6 +2133,8 @@ internal class CrossfadeExoPlayerAdapter(
                 !isCrossfading &&
                 !isCurrentTrackVideo() &&
                 !isNextTrackVideo() &&
+                !isCurrentTrackLive() &&
+                !isNextTrackLive() &&
                 !isCurrentTrackTooShortForCrossfade() &&
                 !isWithinAlbum()
 
@@ -2918,6 +3013,8 @@ internal class CrossfadeExoPlayerAdapter(
                                     pos > 0 &&
                                     !isCurrentTrackVideo() &&
                                     !isNextTrackVideo() &&
+                                    !isCurrentTrackLive() &&
+                                    !isNextTrackLive() &&
                                     !isCurrentTrackTooShortForCrossfade() &&
                                     !isWithinAlbum()
                                 ) {
@@ -2993,8 +3090,12 @@ internal class CrossfadeExoPlayerAdapter(
                                 }
                             }
 
+                        val nextVideoId = playlist.getOrNull(nextIndex)?.mediaId
+                        // A live broadcast is not precached: buffered ahead, it would start behind
+                        // the live edge by however long it waited in the queue.
                         if (nextIndex != localCurrentMediaItemIndex &&
-                            !precachedPlayers.containsKey(playlist.getOrNull(nextIndex)?.mediaId)
+                            !precachedPlayers.containsKey(nextVideoId) &&
+                            nextVideoId?.let(LiveStreamRegistry::isLive) != true
                         ) {
                             indicesToPrecache.add(nextIndex)
                         }
@@ -3124,6 +3225,31 @@ internal class CrossfadeExoPlayerAdapter(
             TAG,
             "Inserted index $insertedOriginalIndex into shuffle at position $insertPos (after shuffle pos $afterShufflePos)",
         )
+    }
+
+    /**
+     * Takes [removedOriginalIndex] — already removed from the playlist — out of the shuffled order,
+     * renumbering the playlist indices after it, so every other track keeps its place in the order.
+     */
+    private fun removeFromShuffleOrder(removedOriginalIndex: Int) {
+        shuffleOrder.remove(removedOriginalIndex)
+        for (i in shuffleOrder.indices) {
+            if (shuffleOrder[i] > removedOriginalIndex) {
+                shuffleOrder[i]--
+            }
+        }
+        rebuildShuffleIndices()
+    }
+
+    /** Re-derives the playlist index → shuffled position map from [shuffleOrder]. */
+    private fun rebuildShuffleIndices() {
+        shuffleIndices.clear()
+        shuffleIndices.addAll(List(playlist.size) { 0 })
+        shuffleOrder.forEachIndexed { shuffledPos, originalIndex ->
+            if (originalIndex in shuffleIndices.indices) {
+                shuffleIndices[originalIndex] = shuffledPos
+            }
+        }
     }
 
     private fun getShuffledMediaItemList(): List<GenericMediaItem> {

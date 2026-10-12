@@ -15,6 +15,7 @@ import com.maxrave.common.LOCAL_PLAYLIST_ID_SAVED_QUEUE
 import com.maxrave.common.MERGING_DATA_TYPE
 import com.maxrave.common.SPONSOR_BLOCK_MIN_SEGMENT_SECONDS
 import com.maxrave.common.SPONSOR_BLOCK_SKIP_MARGIN_MS
+import com.maxrave.common.SponsorBlockType
 import com.maxrave.common.TITLE
 import com.maxrave.data.db.Converters
 import com.maxrave.data.lastfm.LastfmScrobbler
@@ -73,6 +74,7 @@ import com.maxrave.domain.utils.toSongEntity
 import com.maxrave.domain.utils.toTrack
 import com.maxrave.logger.Logger
 import com.my.kizzy.DiscordRPC
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -293,6 +295,12 @@ class JvmMediaPlayerHandlerImpl(
     // SponsorBlock skip segments
     private val _skipSegments: MutableStateFlow<List<SponsorSkipSegments>?> = MutableStateFlow<List<SponsorSkipSegments>?>(null)
     override val skipSegments: StateFlow<List<SponsorSkipSegments>?> = _skipSegments.asStateFlow()
+
+    // SponsorBlock's ticked categories, kept current by a collector in init; null while SponsorBlock is
+    // off or not loaded yet. The per-tick skip check reads this instead of asking DataStore on every 50 ms tick: those
+    // reads (one for the switch plus one per category) kept landing in the middle of the 5 s position
+    // save on Windows (see ReadsWaitForWritesStorage).
+    private val sponsorBlockCategories = MutableStateFlow<Set<String>?>(null)
 
     private val _format: MutableStateFlow<NewFormatEntity?> = MutableStateFlow<NewFormatEntity?>(null)
     override val format: StateFlow<NewFormatEntity?> = _format.asStateFlow()
@@ -533,6 +541,16 @@ class JvmMediaPlayerHandlerImpl(
                         updateNotification()
                     }
                 }
+            val sponsorBlockCategoriesJob =
+                launch {
+                    combine(
+                        SponsorBlockType.toList().map { type ->
+                            dataStoreManager.getString(type.value).map { if (it == TRUE) type.value else null }
+                        },
+                    ) { ticked -> ticked.filterNotNull().toSet() }
+                        .combine(dataStoreManager.sponsorBlockEnabled) { ticked, enabled -> ticked.takeIf { enabled == TRUE } }
+                        .collect { sponsorBlockCategories.value = it }
+                }
             val skipSegmentsJob =
                 launch {
                     simpleMediaState
@@ -548,28 +566,24 @@ class JvmMediaPlayerHandlerImpl(
                         }.filter { it >= 0f }
                         .distinctUntilChanged()
                         .collect { current ->
-                            if (dataStoreManager.sponsorBlockEnabled.first() == TRUE) {
-                                if (player.duration > 0L) {
-                                    val skipSegments = skipSegments.value
-                                    val listCategory = dataStoreManager.getSponsorBlockCategories()
-                                    if (skipSegments != null) {
-                                        for (skip in skipSegments) {
-                                            if (listCategory.contains(skip.category)) {
-                                                if (skip.segment[1] - skip.segment[0] < SPONSOR_BLOCK_MIN_SEGMENT_SECONDS) {
-                                                    continue
-                                                }
-                                                val firstPart = ((skip.segment[0] / skip.videoDuration) * 100).toFloat()
-                                                val secondPart =
-                                                    ((skip.segment[1] / skip.videoDuration) * 100).toFloat()
-                                                if (current in firstPart..secondPart) {
-                                                    Logger.w(TAG, "Seek to $secondPart")
-                                                    Logger.d(TAG, "Seek to Cr: $current, First: $firstPart, Second: $secondPart")
-                                                    skipSegment(
-                                                        (secondPart * player.duration).toLong() / 100 + SPONSOR_BLOCK_SKIP_MARGIN_MS,
-                                                    )
-                                                    showToast(ToastType.SponsorBlockSkip(skip.category))
-                                                }
-                                            }
+                            val categories = sponsorBlockCategories.value
+                            val skipSegments = skipSegments.value
+                            if (categories != null && player.duration > 0L && skipSegments != null) {
+                                for (skip in skipSegments) {
+                                    if (categories.contains(skip.category)) {
+                                        if (skip.segment[1] - skip.segment[0] < SPONSOR_BLOCK_MIN_SEGMENT_SECONDS) {
+                                            continue
+                                        }
+                                        val firstPart = ((skip.segment[0] / skip.videoDuration) * 100).toFloat()
+                                        val secondPart =
+                                            ((skip.segment[1] / skip.videoDuration) * 100).toFloat()
+                                        if (current in firstPart..secondPart) {
+                                            Logger.w(TAG, "Seek to $secondPart")
+                                            Logger.d(TAG, "Seek to Cr: $current, First: $firstPart, Second: $secondPart")
+                                            skipSegment(
+                                                (secondPart * player.duration).toLong() / 100 + SPONSOR_BLOCK_SKIP_MARGIN_MS,
+                                            )
+                                            showToast(ToastType.SponsorBlockSkip(skip.category))
                                         }
                                     }
                                 }
@@ -652,7 +666,7 @@ class JvmMediaPlayerHandlerImpl(
                                                 if (!controlState.value.isPlaying) return@collectLatest
                                                 discordRPC
                                                     ?.updateSong(snap.progressMs, snap.durationMs, snap.speed, snap.song)
-                                                    ?.onFailure { Logger.e(TAG, "Discord RPC update failed: ${it.message}") }
+                                                    ?.onFailure { if (it !is CancellationException) Logger.e(TAG, "Discord RPC update failed: ${it.message}") }
                                             }
                                         }
                                     nowPlayingState.value.songEntity?.let { song ->
@@ -681,6 +695,7 @@ class JvmMediaPlayerHandlerImpl(
                         }
                 }
             controlStateJob.join()
+            sponsorBlockCategoriesJob.join()
             skipSegmentsJob.join()
             playbackJob.join()
             playbackSpeedPitchJob.join()
@@ -728,7 +743,7 @@ class JvmMediaPlayerHandlerImpl(
                                 )
                             if (songEntity.thumbnails != thumbUrl) {
                                 songRepository.updateThumbnailsSongEntity(thumbUrl, songEntity.videoId).singleOrNull()?.let {
-                                    Logger.w(TAG, "getDataOfNowPlayingState: Updated thumbs $it")
+                                    Logger.d(TAG, "getDataOfNowPlayingState: Updated thumbs $it")
                                 }
                             }
                             // Rows written before the parsers carried YouTube's real MUSIC_VIDEO_TYPE_*
@@ -738,12 +753,12 @@ class JvmMediaPlayerHandlerImpl(
                             MusicVideoType.normalize(track?.videoType)?.let { freshVideoType ->
                                 if (songEntity.videoType != freshVideoType) {
                                     songRepository.updateVideoTypeSongEntity(freshVideoType, songEntity.videoId).singleOrNull()?.let {
-                                        Logger.w(TAG, "getDataOfNowPlayingState: Updated videoType $it")
+                                        Logger.d(TAG, "getDataOfNowPlayingState: Updated videoType $it")
                                     }
                                 }
                             }
                             songRepository.updateSongInLibrary(now(), songEntity.videoId).singleOrNull().let {
-                                Logger.w(TAG, "getDataOfNowPlayingState: $it")
+                                Logger.d(TAG, "getDataOfNowPlayingState: $it")
                             }
                             songRepository.updateListenCount(songEntity.videoId)
                             songEntity.copy(thumbnails = thumbUrl)
@@ -763,12 +778,10 @@ class JvmMediaPlayerHandlerImpl(
                                 .insertSong(newSong)
                                 .singleOrNull()
                                 ?.let {
-                                    Logger.w(TAG, "getDataOfNowPlayingState: $it")
+                                    Logger.d(TAG, "getDataOfNowPlayingState: $it")
                                 }
                             newSong
                         }
-                    Logger.w(TAG, "getDataOfNowPlayingState: $songEntity")
-                    Logger.w(TAG, "getDataOfNowPlayingState: $track")
                     _nowPlayingState.update {
                         it.copy(
                             songEntity = song,
@@ -785,7 +798,6 @@ class JvmMediaPlayerHandlerImpl(
                         song.thumbnails,
                     )
                     updateMacOSNowPlayingInfo(song)
-                    Logger.w(TAG, "getDataOfNowPlayingState: ${nowPlayingState.value}")
                 }
                 songEntityJob?.cancel()
                 songEntityJob =
@@ -847,7 +859,7 @@ class JvmMediaPlayerHandlerImpl(
             coroutineScope.launch {
                 if (mediaId != null) {
                     streamRepository.getFormatFlow(mediaId).cancellable().collectLatest { f ->
-                        Logger.w(TAG, "Get format for $mediaId: $f")
+                        Logger.d(TAG, "Get format for $mediaId: itag ${f?.itag}, expires ${f?.expiredTime}")
                         if (f != null) {
                             _format.emit(f)
                         } else {
@@ -1699,7 +1711,7 @@ class JvmMediaPlayerHandlerImpl(
                         .let { response ->
                             val list = response?.first
                             if (list != null) {
-                                Logger.w(TAG, "Check loadMore response $response")
+                                Logger.d(TAG, "Check loadMore response: ${list.size} tracks")
                                 loadMoreCatalog(list)
                                 _queueData.update {
                                     it.copy(
@@ -1823,7 +1835,7 @@ class JvmMediaPlayerHandlerImpl(
             } else {
                 emptySet()
             }
-        Logger.w(TAG, "setQueueData: $queueData")
+        Logger.d(TAG, "setQueueData: ${queueData.listTracks.size} tracks")
     }
 
     override fun getCurrentMediaItem(): GenericMediaItem? = player.currentMediaItem
@@ -2453,7 +2465,7 @@ class JvmMediaPlayerHandlerImpl(
                     val temp: ArrayList<Track> = ArrayList()
                     temp.clear()
                     temp.addAll(_queueData.value.data.listTracks)
-                    Logger.w("Check recover queue", temp.toString())
+                    Logger.i("Check recover queue", "Saved ${temp.size} tracks for the next launch")
                     songRepository.recoverQueue(temp)
                 }
             }
@@ -2778,6 +2790,15 @@ class JvmMediaPlayerHandlerImpl(
         }
         updateNextPreviousTrackAvailability()
         updateMacOSPlaybackState(isPlaying)
+    }
+
+    override fun onSeeked(positionMs: Long) {
+        // Paused, the progress ticker is stopped, so nothing else tells the UI the position moved:
+        // every seek bar, clock and lyric line would wait for play to catch up (#2480). Unlike the
+        // Android twin there is no Discord refresh here: each seek branch already does it.
+        if (!player.isPlaying) {
+            _simpleMediaState.value = SimpleMediaState.Progress(positionMs)
+        }
     }
 
     override fun onMediaItemTransition(

@@ -79,6 +79,7 @@ import com.maxrave.kotlinytmusicscraper.pages.RelatedPage
 import com.maxrave.kotlinytmusicscraper.pages.SearchPage
 import com.maxrave.kotlinytmusicscraper.pages.SearchResult
 import com.maxrave.kotlinytmusicscraper.pages.SearchSuggestionPage
+import com.maxrave.kotlinytmusicscraper.parser.fromPlaylistContinuationToTrackWithSetVideoId
 import com.maxrave.kotlinytmusicscraper.parser.fromPlaylistContinuationToTracks
 import com.maxrave.kotlinytmusicscraper.parser.fromPlaylistToTrack
 import com.maxrave.kotlinytmusicscraper.parser.fromPlaylistToTrackWithSetVideoId
@@ -666,19 +667,28 @@ class YouTube {
                 response.fromPlaylistToTrackWithSetVideoId(),
             )
             var continuation = response.getPlaylistContinuation()
-            while (continuation != null) {
+            // A token seen twice would loop forever.
+            val seenContinuations = mutableSetOf<String>()
+            while (continuation != null && seenContinuations.add(continuation)) {
+                // A page that fails ends the walk but keeps the pages already read, rather than
+                // failing the whole result.
                 val continuationResponse =
-                    ytMusic
-                        .browse(
-                            client = WEB_REMIX,
-                            setLogin = true,
-                            params = null,
-                            continuation = continuation,
-                        ).body<BrowseResponse>()
+                    runCatching {
+                        ytMusic
+                            .browse(
+                                client = WEB_REMIX,
+                                setLogin = true,
+                                params = null,
+                                continuation = continuation,
+                            ).body<BrowseResponse>()
+                    }.getOrNull() ?: break
+                // Continuation pages carry their rows in a different shape from the first page:
+                // read with the first-page parser they yielded nothing, so every track past the
+                // first page (100) was missing.
                 listPair.addAll(
-                    continuationResponse.fromPlaylistToTrackWithSetVideoId(),
+                    continuationResponse.fromPlaylistContinuationToTrackWithSetVideoId(),
                 )
-                continuation = continuationResponse.getContinuePlaylistContinuation()
+                continuation = continuationResponse.getPlaylistContinuation()
             }
 
             return@runCatching listPair
@@ -1174,7 +1184,7 @@ class YouTube {
                     ?.likeButtonRenderer
                     ?.likeStatus
                     ?.toLikeStatus()
-            Logger.w("YouTube", "Like Status ${response.playerOverlays}")
+            Logger.d("YouTube", "Like status: $likeStatus")
             return@runCatching likeStatus ?: LikeStatus.INDIFFERENT
         }
 
@@ -2146,9 +2156,9 @@ class YouTube {
      * Fetch the remote app config (TIDAL credentials) from GitHub raw.
      * Returns a [Result] so callers can fall back silently when the fetch/parse fails.
      */
-    suspend fun getTidalRemoteConfig(): Result<RemoteConfig> =
+    suspend fun getTidalRemoteConfig(dev: Boolean = false): Result<RemoteConfig> =
         runCatching {
-            ytMusic.getTidalRemoteConfig()
+            ytMusic.getTidalRemoteConfig(dev)
         }
 
     /**

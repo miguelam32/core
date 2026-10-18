@@ -41,6 +41,7 @@ import com.maxrave.kotlinytmusicscraper.models.response.AccountMenuResponse
 import com.maxrave.kotlinytmusicscraper.models.response.AccountSwitcherEndpointResponse
 import com.maxrave.kotlinytmusicscraper.models.response.AddItemYouTubePlaylistResponse
 import com.maxrave.kotlinytmusicscraper.models.response.BrowseResponse
+import com.maxrave.kotlinytmusicscraper.models.response.CommentsResponse
 import com.maxrave.kotlinytmusicscraper.models.response.CreatePlaylistResponse
 import com.maxrave.kotlinytmusicscraper.models.response.ImageUploadResponse
 import com.maxrave.kotlinytmusicscraper.models.response.DownloadProgress
@@ -69,6 +70,9 @@ import com.maxrave.kotlinytmusicscraper.pages.AlbumPage
 import com.maxrave.kotlinytmusicscraper.pages.ArtistPage
 import com.maxrave.kotlinytmusicscraper.pages.ArtistSection
 import com.maxrave.kotlinytmusicscraper.pages.BrowseResult
+import com.maxrave.kotlinytmusicscraper.pages.CommentItem
+import com.maxrave.kotlinytmusicscraper.pages.CommentsPage
+import com.maxrave.kotlinytmusicscraper.pages.CommentsPageParser
 import com.maxrave.kotlinytmusicscraper.pages.ExplorePage
 import com.maxrave.kotlinytmusicscraper.pages.MoodAndGenres
 import com.maxrave.kotlinytmusicscraper.pages.NextPage
@@ -1248,6 +1252,50 @@ class YouTube {
             // Get author thumbnails, subscribers, description, like count
         }
 
+    /**
+     * A track's comments, from the Comments tab of YouTube Music's own watch page: the first page
+     * and its header. Null when the track has none: comments turned off, or a live stream that only
+     * has its chat. Signed in, the comments carry the like, dislike and reply commands.
+     */
+    suspend fun comments(videoId: String): Result<CommentsPage?> =
+        runCatching {
+            val next = ytMusic.next(WEB_REMIX, videoId, null, null, null, null).body<NextResponse>()
+            val token = CommentsPageParser.commentsTabToken(next) ?: return@runCatching null
+            CommentsPageParser
+                .parse(ytMusic.next(WEB_REMIX, null, null, null, null, null, token).body<CommentsResponse>())
+                .takeIf { it.header != null || it.comments.isNotEmpty() }
+        }
+
+    /** Whatever a comments token loads: the next page, a sort, a thread's replies, or more of them. */
+    suspend fun commentsPage(token: String): Result<CommentsPage> =
+        runCatching {
+            CommentsPageParser.parse(ytMusic.next(WEB_REMIX, null, null, null, null, null, token).body<CommentsResponse>())
+        }
+
+    /** Posts a comment. The result is the comment as YouTube made it, or null when its answer did not carry it. */
+    suspend fun createComment(
+        createCommentParams: String,
+        text: String,
+    ): Result<CommentItem?> =
+        runCatching {
+            CommentsPageParser.parseCreated(ytMusic.createComment(createCommentParams, text).body<CommentsResponse>())
+        }
+
+    suspend fun createCommentReply(
+        createReplyParams: String,
+        text: String,
+    ): Result<CommentItem?> =
+        runCatching {
+            CommentsPageParser.parseCreated(ytMusic.createCommentReply(createReplyParams, text).body<CommentsResponse>())
+        }
+
+    /** Like, dislike, or undo either: [action] is the token the comment's toolbar carries for it. */
+    suspend fun performCommentAction(action: String): Result<Unit> =
+        runCatching {
+            ytMusic.performCommentAction(action)
+            Unit
+        }
+
     private suspend fun getVisitorData(
         videoId: String,
         playlistId: String?,
@@ -2142,6 +2190,11 @@ class YouTube {
             ytMusic.addToLiked(mediaId).status.value
         }
 
+    suspend fun addToDisliked(mediaId: String) =
+        runCatching {
+            ytMusic.addToDisliked(mediaId).status.value
+        }
+
     suspend fun removeFromLiked(mediaId: String) =
         runCatching {
             ytMusic.removeFromLiked(mediaId).status.value
@@ -2237,6 +2290,13 @@ class YouTube {
             trySend(DownloadProgress(0.01f))
             player(videoId = videoId)
                 .onSuccess { playerResponse ->
+                    // A live broadcast has no file to save: player() hands it back as an HLS
+                    // playlist with every format emptied, which would otherwise surface as the
+                    // misleading "Audio format url is null" below.
+                    if (playerResponse.second.videoDetails?.isLive == true) {
+                        trySend(DownloadProgress.failed("Live streams cannot be downloaded"))
+                        return@channelFlow
+                    }
                     val audioFormat =
                         listOf(
                             playerResponse.second.streamingData

@@ -904,6 +904,15 @@ internal class CrossfadeExoPlayerAdapter(
         }
     }
 
+    /**
+     * An empty playlist that gains an item points at it, as ExoPlayer's own does. clearMediaItems()
+     * leaves the index at -1 and nothing else moves it, so prepare() below loaded nothing and Add to
+     * queue with nothing loaded (fresh start, or after closing the mini player) never played.
+     */
+    private fun pointAtFirstItemIfUnset() {
+        if (localCurrentMediaItemIndex < 0 && playlist.isNotEmpty()) localCurrentMediaItemIndex = 0
+    }
+
     override fun prepare() {
         if (playlist.isNotEmpty() && localCurrentMediaItemIndex >= 0) {
             coroutineScope.launch {
@@ -936,6 +945,7 @@ internal class CrossfadeExoPlayerAdapter(
 
     override fun addMediaItem(mediaItem: GenericMediaItem) {
         playlist.add(mediaItem)
+        pointAtFirstItemIfUnset()
 
         if (internalShuffleModeEnabled) {
             insertAppendedIntoShuffleOrder()
@@ -964,6 +974,7 @@ internal class CrossfadeExoPlayerAdapter(
             if (index <= localCurrentMediaItemIndex) {
                 localCurrentMediaItemIndex++
             }
+            pointAtFirstItemIfUnset()
 
             // Update shuffle order if enabled
             if (internalShuffleModeEnabled) {

@@ -7,6 +7,7 @@ import java.util.concurrent.LinkedBlockingDeque
 
 internal object PcmUdpExporter {
     private const val PORT = 4213
+    private const val ISLAND_PORT = 4215
     private const val QUEUE_CAPACITY = 64
     private const val TAG_FORMAT: Byte = 0x01
     private const val TAG_AUDIO: Byte = 0x02
@@ -30,6 +31,10 @@ internal object PcmUdpExporter {
                         val payload = queue.take()
                         val packet = DatagramPacket(payload, payload.size, address, PORT)
                         socket.send(packet)
+                        try {
+                            socket.send(DatagramPacket(payload, payload.size, address, ISLAND_PORT))
+                        } catch (_: Exception) {
+                        }
                     } catch (_: InterruptedException) {
                         return@Thread
                     } catch (_: Exception) {

@@ -280,16 +280,6 @@ interface DataStoreManager {
 
     suspend fun setReverbMode(mode: AudioEffectMode)
 
-    /** AUTO / OFF / ON del reverb. Sin valor guardado se deriva de [reverbEnabled]. */
-    val reverbMode: Flow<AudioEffectMode>
-
-    suspend fun setReverbMode(mode: AudioEffectMode)
-
-    /** AUTO / OFF / ON del reverb. Sin valor guardado se deriva de [reverbEnabled]. */
-    val reverbMode: Flow<AudioEffectMode>
-
-    suspend fun setReverbMode(mode: AudioEffectMode)
-
     /**
      * The room being convolved against, as the raw [ReverbPreset] name.
      *
@@ -310,16 +300,6 @@ interface DataStoreManager {
     val eightDEnabled: Flow<String>
 
     suspend fun setEightDEnabled(enabled: Boolean)
-
-    /** AUTO / OFF / ON del 8D. Sin valor guardado se deriva de [eightDEnabled]. */
-    val eightDMode: Flow<AudioEffectMode>
-
-    suspend fun setEightDMode(mode: AudioEffectMode)
-
-    /** AUTO / OFF / ON del 8D. Sin valor guardado se deriva de [eightDEnabled]. */
-    val eightDMode: Flow<AudioEffectMode>
-
-    suspend fun setEightDMode(mode: AudioEffectMode)
 
     /** AUTO / OFF / ON del 8D. Sin valor guardado se deriva de [eightDEnabled]. */
     val eightDMode: Flow<AudioEffectMode>

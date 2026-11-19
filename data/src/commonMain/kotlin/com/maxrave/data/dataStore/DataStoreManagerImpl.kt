@@ -1,5 +1,8 @@
 package com.maxrave.data.dataStore
 
+import com.maxrave.domain.manager.AudioEffectMode
+import com.maxrave.domain.manager.AudioEffectMode
+import com.maxrave.domain.manager.AudioEffectMode
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
@@ -793,6 +796,66 @@ internal class DataStoreManagerImpl(
                 settings[REVERB_MIX] = mix.toString()
             }
         }
+    }
+
+    override val reverbMode: Flow<AudioEffectMode> =
+        settingsDataStore.data.map { prefs ->
+            AudioEffectMode.fromStored(prefs[REVERB_MODE])
+                ?: if (prefs[REVERB_ENABLED] == TRUE) AudioEffectMode.ON else AudioEffectMode.OFF
+        }
+
+    override suspend fun setReverbMode(mode: AudioEffectMode) {
+        settingsDataStore.edit { it[REVERB_MODE] = mode.name }
+    }
+
+    override val eightDMode: Flow<AudioEffectMode> =
+        settingsDataStore.data.map { prefs ->
+            AudioEffectMode.fromStored(prefs[EIGHT_D_MODE])
+                ?: if (prefs[EIGHT_D_ENABLED] == TRUE) AudioEffectMode.ON else AudioEffectMode.OFF
+        }
+
+    override suspend fun setEightDMode(mode: AudioEffectMode) {
+        settingsDataStore.edit { it[EIGHT_D_MODE] = mode.name }
+    }
+
+    override val reverbMode: Flow<AudioEffectMode> =
+        settingsDataStore.data.map { prefs ->
+            AudioEffectMode.fromStored(prefs[REVERB_MODE])
+                ?: if (prefs[REVERB_ENABLED] == TRUE) AudioEffectMode.ON else AudioEffectMode.OFF
+        }
+
+    override suspend fun setReverbMode(mode: AudioEffectMode) {
+        settingsDataStore.edit { it[REVERB_MODE] = mode.name }
+    }
+
+    override val eightDMode: Flow<AudioEffectMode> =
+        settingsDataStore.data.map { prefs ->
+            AudioEffectMode.fromStored(prefs[EIGHT_D_MODE])
+                ?: if (prefs[EIGHT_D_ENABLED] == TRUE) AudioEffectMode.ON else AudioEffectMode.OFF
+        }
+
+    override suspend fun setEightDMode(mode: AudioEffectMode) {
+        settingsDataStore.edit { it[EIGHT_D_MODE] = mode.name }
+    }
+
+    override val reverbMode: Flow<AudioEffectMode> =
+        settingsDataStore.data.map { prefs ->
+            AudioEffectMode.fromStored(prefs[REVERB_MODE])
+                ?: if (prefs[REVERB_ENABLED] == TRUE) AudioEffectMode.ON else AudioEffectMode.OFF
+        }
+
+    override suspend fun setReverbMode(mode: AudioEffectMode) {
+        settingsDataStore.edit { it[REVERB_MODE] = mode.name }
+    }
+
+    override val eightDMode: Flow<AudioEffectMode> =
+        settingsDataStore.data.map { prefs ->
+            AudioEffectMode.fromStored(prefs[EIGHT_D_MODE])
+                ?: if (prefs[EIGHT_D_ENABLED] == TRUE) AudioEffectMode.ON else AudioEffectMode.OFF
+        }
+
+    override suspend fun setEightDMode(mode: AudioEffectMode) {
+        settingsDataStore.edit { it[EIGHT_D_MODE] = mode.name }
     }
 
     override val eightDEnabled: Flow<String> =
@@ -1969,6 +2032,12 @@ internal class DataStoreManagerImpl(
         val EIGHT_D_ENABLED = stringPreferencesKey("eight_d_enabled")
         val EIGHT_D_DIRECTION = stringPreferencesKey("eight_d_direction")
         val EIGHT_D_PERIOD_SECONDS = stringPreferencesKey("eight_d_period_seconds")
+        val REVERB_MODE = stringPreferencesKey("reverb_mode")
+        val EIGHT_D_MODE = stringPreferencesKey("eight_d_mode")
+        val REVERB_MODE = stringPreferencesKey("reverb_mode")
+        val EIGHT_D_MODE = stringPreferencesKey("eight_d_mode")
+        val REVERB_MODE = stringPreferencesKey("reverb_mode")
+        val EIGHT_D_MODE = stringPreferencesKey("eight_d_mode")
         val REVERB_PRESET = stringPreferencesKey("reverb_preset")
         val REVERB_MIX = stringPreferencesKey("reverb_mix")
         val SPOTIFY_CANVAS = stringPreferencesKey("spotify_canvas")

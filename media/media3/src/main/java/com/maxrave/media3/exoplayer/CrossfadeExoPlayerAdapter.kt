@@ -1,5 +1,7 @@
 package com.maxrave.media3.exoplayer
 
+import com.maxrave.domain.data.player.AudioOutputKind
+import com.maxrave.domain.manager.AudioEffectMode
 import android.annotation.SuppressLint
 import android.content.Context
 import android.media.AudioDeviceInfo
@@ -370,6 +372,41 @@ internal class CrossfadeExoPlayerAdapter(
             precachedPlayers.values.forEach { it.player.setPreferredAudioDevice(device) }
         }
     }
+    // MZKXLF-HOOK: modo AUTO/OFF/ON de Reverb y 8D (AUTO = solo con salida Bluetooth activa)
+    init {
+        coroutineScope.launch {
+            var lastReverb: Boolean? = null
+            var lastEightD: Boolean? = null
+            kotlinx.coroutines.flow.combine(
+                dataStoreManager.reverbMode,
+                dataStoreManager.eightDMode,
+                audioOutputs,
+            ) { reverbMode, eightDMode, outputs ->
+                val bt = outputs.any { it.isActive && it.kind == AudioOutputKind.BLUETOOTH }
+                val r = when (reverbMode) {
+                    AudioEffectMode.ON -> true
+                    AudioEffectMode.OFF -> false
+                    AudioEffectMode.AUTO -> bt
+                }
+                val e = when (eightDMode) {
+                    AudioEffectMode.ON -> true
+                    AudioEffectMode.OFF -> false
+                    AudioEffectMode.AUTO -> bt
+                }
+                Pair(r, e)
+            }.collect { (reverb, eightD) ->
+                if (reverb != lastReverb) {
+                    lastReverb = reverb
+                    dataStoreManager.setReverbEnabled(reverb)
+                }
+                if (eightD != lastEightD) {
+                    lastEightD = eightD
+                    dataStoreManager.setEightDEnabled(eightD)
+                }
+            }
+        }
+    }
+
     private var precacheEnabled = true
     private val maxPrecacheCount = 2
     private var precacheJob: Job? = null
